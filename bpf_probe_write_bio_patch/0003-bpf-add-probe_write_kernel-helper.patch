@@ -1,0 +1,59 @@
+--- a/include/uapi/linux/bpf.h
++++ b/include/uapi/linux/bpf.h
+@@ -6064,6 +6064,7 @@
+ 	FN(user_ringbuf_drain, 209, ##ctx)		\
+ 	FN(cgrp_storage_get, 210, ##ctx)		\
+ 	FN(cgrp_storage_delete, 211, ##ctx)		\
++	FN(probe_write_kernel_bio_write_stream, 212, ##ctx)	\
+ 	/* This helper list is effectively frozen. If you are trying to	\
+ 	 * add a new helper, you should add a kfunc instead which has	\
+ 	 * less stability guarantees. See Documentation/bpf/kfuncs.rst	\
+--- a/kernel/trace/bpf_trace.c
++++ b/kernel/trace/bpf_trace.c
+@@ -25,6 +25,7 @@
+ #include <linux/verification.h>
+ #include <linux/namei.h>
+ 
++#include <linux/blk_types.h>
+ #include <net/bpf_sk_storage.h>
+ 
+ #include <uapi/linux/bpf.h>
+@@ -350,6 +351,26 @@ static const struct bpf_func_proto bpf_probe_write_user_proto = {
+ 	.arg3_type	= ARG_CONST_SIZE,
+ };
+ 
++/* Allow BPF to set only struct bio's bi_write_stream (FDP write stream). */
++BPF_CALL_2(bpf_probe_write_kernel_bio_write_stream, struct bio *, bio, u8, stream_id)
++{
++	if (!bio)
++		return -EINVAL;
++	return copy_to_kernel_nofault(&bio->bi_write_stream, &stream_id, sizeof(stream_id));
++}
++
++BTF_ID_LIST(bpf_bio_btf_ids)
++BTF_ID(struct, bio)
++BTF_ID_LIST_END
++
++static const struct bpf_func_proto bpf_probe_write_kernel_bio_write_stream_proto = {
++	.func		= bpf_probe_write_kernel_bio_write_stream,
++	.gpl_only	= true,
++	.ret_type	= RET_INTEGER,
++	.arg1_type	= ARG_PTR_TO_BTF_ID,
++	.arg1_btf_id	= &bpf_bio_btf_ids[0],
++	.arg2_type	= ARG_ANYTHING,
++};
++
+ #define MAX_TRACE_PRINTK_VARARGS	3
+ #define BPF_TRACE_PRINTK_SIZE		1024
+ 
+@@ -1495,6 +1512,9 @@ bpf_trace_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
+ 	switch (func_id) {
+ 	case BPF_FUNC_probe_write_user:
+ 		return security_locked_down(LOCKDOWN_BPF_WRITE_USER) < 0 ?
+ 		       NULL : &bpf_probe_write_user_proto;
++	case BPF_FUNC_probe_write_kernel_bio_write_stream:
++		return security_locked_down(LOCKDOWN_BPF_WRITE_USER) < 0 ?
++		       NULL : &bpf_probe_write_kernel_bio_write_stream_proto;
+ 	default:
+ 		return NULL;
+ 	}
